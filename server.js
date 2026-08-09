@@ -8,6 +8,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const crypto = require("crypto");
 const archiver = require("archiver");
 const { uuid, ...db } = require("./scripts/db");
 const { planRequirement } = require("./scripts/planner");
@@ -29,6 +30,60 @@ fs.mkdirSync(SITES_DIR, { recursive: true });
 process.on("uncaughtException", (e) => console.error("UNCAUGHT:", e));
 process.on("unhandledRejection", (e) => console.error("UNHANDLED:", e));
 process.on("exit", (c) => console.error("EXIT code:", c));
+
+/* ================= 认证 ================= */
+function hashPassword(pw, salt) {
+  return crypto.scryptSync(String(pw), salt, 64).toString("hex");
+}
+function newToken() {
+  return crypto.randomBytes(32).toString("hex");
+}
+function authMiddleware(req, res, next) {
+  const h = req.headers.authorization || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+  if (!token) return res.status(401).json({ code: 401, message: "未登录" });
+  const user = db.getUserByToken.get(token);
+  if (!user) return res.status(401).json({ code: 401, message: "登录已失效" });
+  req.user = user;
+  req.token = token;
+  next();
+}
+
+// 注册 / 登录 / 登出 / 当前用户
+app.post("/api/auth/register", (req, res) => {
+  const username = String(req.body?.username || "").trim().slice(0, 30);
+  const password = String(req.body?.password || "");
+  if (username.length < 2 || password.length < 4)
+    return res.status(400).json({ code: 1, message: "用户名至少2字符、密码至少4位" });
+  if (db.getUserByUsername.get(username))
+    return res.status(409).json({ code: 1, message: "用户名已存在" });
+  const salt = crypto.randomBytes(16).toString("hex");
+  const id = uuid();
+  db.insertUser.run(id, username, hashPassword(password, salt), salt);
+  const token = newToken();
+  db.insertSession.run(token, id);
+  res.json({ code: 0, data: { token, user: db.getUserById.get(id) } });
+});
+
+app.post("/api/auth/login", (req, res) => {
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+  const user = db.getUserByUsername.get(username);
+  if (!user || user.password_hash !== hashPassword(password, user.salt))
+    return res.status(401).json({ code: 401, message: "用户名或密码错误" });
+  const token = newToken();
+  db.insertSession.run(token, user.id);
+  res.json({ code: 0, data: { token, user: db.getUserById.get(user.id) } });
+});
+
+app.post("/api/auth/logout", authMiddleware, (req, res) => {
+  db.deleteSession.run(req.token);
+  res.json({ code: 0, data: {} });
+});
+
+app.get("/api/auth/me", authMiddleware, (req, res) => {
+  res.json({ code: 0, data: { user: db.getUserById.get(req.user.id) } });
+});
 
 /* ================= SSE 事件中心 ================= */
 const clients = new Map(); // chatId -> Set<res>
@@ -104,28 +159,28 @@ async function runPipeline(chat, tasks) {
 }
 
 /* ================= API ================= */
-// 项目
-app.post("/api/projects", (req, res) => {
+// 项目（需登录）
+app.post("/api/projects", authMiddleware, (req, res) => {
   const name = String(req.body?.name || "").trim().slice(0, 40) || "我的项目";
   const id = uuid();
-  db.insertProject.run(id, name);
+  db.insertProject.run(id, name, req.user.id);
   res.json({ code: 0, data: db.getProject.get(id) });
 });
-app.get("/api/projects", (req, res) => {
-  const projects = db.listProjects.all().map((p) => {
+app.get("/api/projects", authMiddleware, (req, res) => {
+  const projects = db.listProjects.all(req.user.id).map((p) => {
     const chats = db.listChatsByProject.all(p.id);
     return { ...p, chatCount: chats.length };
   });
   res.json({ code: 0, data: projects });
 });
-app.get("/api/projects/:id", (req, res) => {
+app.get("/api/projects/:id", authMiddleware, (req, res) => {
   const p = db.getProject.get(req.params.id);
   if (!p) return res.status(404).json({ code: 1, message: "项目不存在" });
   res.json({ code: 0, data: { ...p, chats: db.listChatsByProject.all(p.id) } });
 });
 
 // 会话：发起需求 → LLM 规划
-app.post("/api/projects/:pid/chats", async (req, res) => {
+app.post("/api/projects/:pid/chats", authMiddleware, async (req, res) => {
   const requirement = String(req.body?.requirement || "").trim().slice(0, 200);
   if (!requirement) return res.status(400).json({ code: 1, message: "需求不能为空" });
   const project = db.getProject.get(req.params.pid);
@@ -153,7 +208,7 @@ app.post("/api/projects/:pid/chats", async (req, res) => {
 });
 
 // 会话详情
-app.get("/api/chats/:id", (req, res) => {
+app.get("/api/chats/:id", authMiddleware, (req, res) => {
   const chat = db.getChat.get(req.params.id);
   if (!chat) return res.status(404).json({ code: 1, message: "会话不存在" });
   res.json({
@@ -169,7 +224,7 @@ app.get("/api/chats/:id", (req, res) => {
 });
 
 // 批准 → 启动真实管线
-app.post("/api/chats/:id/approve", (req, res) => {
+app.post("/api/chats/:id/approve", authMiddleware, (req, res) => {
   const chat = db.getChat.get(req.params.id);
   if (!chat) return res.status(404).json({ code: 1, message: "会话不存在" });
   if (chat.status !== "awaiting_approval" && chat.status !== "failed")
@@ -182,8 +237,11 @@ app.post("/api/chats/:id/approve", (req, res) => {
   res.json({ code: 0, data: { chat: db.getChat.get(chat.id) } });
 });
 
-// SSE 实时进度
+// SSE 实时进度（EventSource 无法带 Header，token 走 query）
 app.get("/api/chats/:id/events", (req, res) => {
+  const token = req.query.token;
+  if (!token || !db.getUserByToken.get(String(token)))
+    return res.status(401).end();
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -211,7 +269,7 @@ app.get("/api/chats/:id/events", (req, res) => {
 app.use("/api/sites", express.static(SITES_DIR));
 
 // 产物下载（含部署手册）
-app.get("/api/artifact/download", (req, res) => {
+app.get("/api/artifact/download", authMiddleware, (req, res) => {
   const chatId = String(req.query.chatId || "");
   const chat = db.getChat.get(chatId);
   const ver = db.getLatestVersion.get(chatId);

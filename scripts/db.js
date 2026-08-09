@@ -13,9 +13,22 @@ db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  user_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS chats (
@@ -79,9 +92,20 @@ CREATE INDEX IF NOT EXISTS idx_versions_chat ON versions(chat_id, version_no);
 
 const uuid = () => "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
+// 兼容旧库：projects 补充 user_id 列
+try { db.exec("ALTER TABLE projects ADD COLUMN user_id TEXT"); } catch (_) {}
+
+// ---------- Users / Sessions ----------
+const insertUser = db.prepare("INSERT INTO users(id,username,password_hash,salt) VALUES(?,?,?,?)");
+const getUserByUsername = db.prepare("SELECT * FROM users WHERE username=?");
+const getUserById = db.prepare("SELECT id,username,created_at FROM users WHERE id=?");
+const insertSession = db.prepare("INSERT INTO sessions(token,user_id) VALUES(?,?)");
+const getUserByToken = db.prepare("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?");
+const deleteSession = db.prepare("DELETE FROM sessions WHERE token=?");
+
 // ---------- Projects ----------
-const insertProject = db.prepare("INSERT INTO projects(id,name) VALUES(?,?)");
-const listProjects = db.prepare("SELECT * FROM projects ORDER BY created_at DESC");
+const insertProject = db.prepare("INSERT INTO projects(id,name,user_id) VALUES(?,?,?)");
+const listProjects = db.prepare("SELECT * FROM projects WHERE user_id=? OR user_id IS NULL ORDER BY created_at DESC");
 const getProject = db.prepare("SELECT * FROM projects WHERE id=?");
 
 // ---------- Chats ----------
@@ -132,6 +156,7 @@ const setCurrent = db.prepare("UPDATE versions SET is_current=1 WHERE id=?");
 
 module.exports = {
   uuid,
+  insertUser, getUserByUsername, getUserById, insertSession, getUserByToken, deleteSession,
   insertProject, listProjects, getProject,
   insertChat, getChat, updateChatStatus, updateChatMeta, listChatsByProject,
   insertMessage, listMessages,
