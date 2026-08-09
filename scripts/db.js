@@ -16,6 +16,7 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
+  email TEXT UNIQUE,
   password_hash TEXT NOT NULL,
   salt TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -92,13 +93,16 @@ CREATE INDEX IF NOT EXISTS idx_versions_chat ON versions(chat_id, version_no);
 
 const uuid = () => "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
-// 兼容旧库：projects 补充 user_id 列
+// 兼容旧库：projects 补 user_id、users 补 email
 try { db.exec("ALTER TABLE projects ADD COLUMN user_id TEXT"); } catch (_) {}
+try { db.exec("ALTER TABLE users ADD COLUMN email TEXT"); } catch (_) {}
 
 // ---------- Users / Sessions ----------
-const insertUser = db.prepare("INSERT INTO users(id,username,password_hash,salt) VALUES(?,?,?,?)");
+const insertUser = db.prepare("INSERT INTO users(id,username,email,password_hash,salt) VALUES(?,?,?,?,?)");
 const getUserByUsername = db.prepare("SELECT * FROM users WHERE username=?");
-const getUserById = db.prepare("SELECT id,username,created_at FROM users WHERE id=?");
+const getUserByEmail = db.prepare("SELECT * FROM users WHERE email=?");
+const getUserByLogin = db.prepare("SELECT * FROM users WHERE email=? OR username=? LIMIT 1");
+const getUserById = db.prepare("SELECT id,username,email,created_at FROM users WHERE id=?");
 const insertSession = db.prepare("INSERT INTO sessions(token,user_id) VALUES(?,?)");
 const getUserByToken = db.prepare("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?");
 const deleteSession = db.prepare("DELETE FROM sessions WHERE token=?");
@@ -156,7 +160,7 @@ const setCurrent = db.prepare("UPDATE versions SET is_current=1 WHERE id=?");
 
 module.exports = {
   uuid,
-  insertUser, getUserByUsername, getUserById, insertSession, getUserByToken, deleteSession,
+  insertUser, getUserByUsername, getUserByEmail, getUserByLogin, getUserById, insertSession, getUserByToken, deleteSession,
   insertProject, listProjects, getProject,
   insertChat, getChat, updateChatStatus, updateChatMeta, listChatsByProject,
   insertMessage, listMessages,

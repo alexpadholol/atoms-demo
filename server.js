@@ -49,28 +49,41 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// 注册 / 登录 / 登出 / 当前用户
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// 注册（支持邮箱或用户名）/ 登录 / 登出 / 当前用户
 app.post("/api/auth/register", (req, res) => {
-  const username = String(req.body?.username || "").trim().slice(0, 30);
+  const email = String(req.body?.email || "").trim().toLowerCase().slice(0, 100);
+  let username = String(req.body?.username || "").trim().slice(0, 30);
   const password = String(req.body?.password || "");
+
+  // 邮箱优先；无邮箱则退化为纯用户名注册（兼容）
+  const useEmail = !!email;
+  if (useEmail && !EMAIL_RE.test(email))
+    return res.status(400).json({ code: 1, message: "邮箱格式不正确" });
+  if (useEmail && !username) username = email.split("@")[0].slice(0, 30);
   if (username.length < 2 || password.length < 4)
     return res.status(400).json({ code: 1, message: "用户名至少2字符、密码至少4位" });
+
   if (db.getUserByUsername.get(username))
     return res.status(409).json({ code: 1, message: "用户名已存在" });
+  if (useEmail && db.getUserByEmail.get(email))
+    return res.status(409).json({ code: 1, message: "邮箱已被注册" });
+
   const salt = crypto.randomBytes(16).toString("hex");
   const id = uuid();
-  db.insertUser.run(id, username, hashPassword(password, salt), salt);
+  db.insertUser.run(id, username, useEmail ? email : null, hashPassword(password, salt), salt);
   const token = newToken();
   db.insertSession.run(token, id);
   res.json({ code: 0, data: { token, user: db.getUserById.get(id) } });
 });
 
 app.post("/api/auth/login", (req, res) => {
-  const username = String(req.body?.username || "").trim();
+  const account = String(req.body?.account || req.body?.username || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
-  const user = db.getUserByUsername.get(username);
+  const user = db.getUserByLogin.get(account, account);
   if (!user || user.password_hash !== hashPassword(password, user.salt))
-    return res.status(401).json({ code: 401, message: "用户名或密码错误" });
+    return res.status(401).json({ code: 401, message: "账号或密码错误" });
   const token = newToken();
   db.insertSession.run(token, user.id);
   res.json({ code: 0, data: { token, user: db.getUserById.get(user.id) } });

@@ -121,7 +121,8 @@
           <button class="btn ghost" id="tabRegister" style="flex:1">注册</button>
         </div>
         <div style="display:flex;flex-direction:column;gap:12px">
-          <input id="authUser" placeholder="用户名（至少 2 字符）" style="background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
+          <input id="authEmail" placeholder="邮箱（可留空，留空则用用户名注册）" style="display:none;background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
+          <input id="authUser" placeholder="用户名 / 邮箱" style="background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
           <input id="authPass" type="password" placeholder="密码（至少 4 位）" style="background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
           <div id="authErr" style="color:var(--red);font-size:13px;min-height:18px"></div>
           <button class="btn" id="btnAuth">登录</button>
@@ -229,11 +230,15 @@ function showLogin() {
   if (sse) { sse.close(); sse = null; }
 }
 async function doAuth() {
-  const username = $("authUser").value.trim();
+  const account = $("authUser").value.trim();
+  const email = $("authEmail").value.trim().toLowerCase();
   const password = $("authPass").value;
   $("authErr").textContent = "";
   try {
-    const d = await api(`/api/auth/${authMode}`, { method: "POST", body: JSON.stringify({ username, password }) });
+    const body = authMode === "register"
+      ? { username: account, email, password }  // 填了邮箱即邮箱注册，username 可留空（自动取邮箱前缀）
+      : { account, password };
+    const d = await api(`/api/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) });
     setToken(d.token);
     authUser = d.user;
     await loadHome();
@@ -485,8 +490,8 @@ $("btnApprove").onclick = approve;
 $("btnDownload").onclick = download;
 $("btnLogout").onclick = logout;
 $("btnAuth").onclick = doAuth;
-$("tabLogin").onclick = () => { authMode = "login"; $("tabLogin").className = "btn"; $("tabRegister").className = "btn ghost"; $("btnAuth").textContent = "登录"; $("authErr").textContent = ""; };
-$("tabRegister").onclick = () => { authMode = "register"; $("tabRegister").className = "btn"; $("tabLogin").className = "btn ghost"; $("btnAuth").textContent = "注册"; $("authErr").textContent = ""; };
+$("tabLogin").onclick = () => { authMode = "login"; $("tabLogin").className = "btn"; $("tabRegister").className = "btn ghost"; $("btnAuth").textContent = "登录"; $("authUser").placeholder = "用户名 / 邮箱"; $("authEmail").style.display = "none"; $("authErr").textContent = ""; };
+$("tabRegister").onclick = () => { authMode = "register"; $("tabRegister").className = "btn"; $("tabLogin").className = "btn ghost"; $("btnAuth").textContent = "注册"; $("authUser").placeholder = "用户名（可留空，自动取邮箱前缀）"; $("authEmail").style.display = ""; $("authErr").textContent = ""; };
 $("authPass").addEventListener("keydown", e => { if (e.key === "Enter") doAuth(); });
 $("input").addEventListener("keydown", e => { if (e.key === "Enter") submitRequirement(); });
 $("chips").addEventListener("click", e => { if (e.target.classList.contains("chip")) $("input").value = e.target.textContent; });
