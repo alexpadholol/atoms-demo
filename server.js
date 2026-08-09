@@ -53,13 +53,13 @@ function emit(chatId, event, data) {
 async function runPipeline(chat, tasks) {
   const chatId = chat.id;
   const run = (phase, detail) => {
-    const info = db.insertToolRun.run(chatId, phase, detail, "running", null, "", 0).lastInsertRowid;
-    emit(chatId, "phase", { phase, detail, status: "running" });
-    return info;
+    const id = db.insertToolRun.run(chatId, phase, detail, "running", null, "", 0).lastInsertRowid;
+    emit(chatId, "phase", { id, phase, detail, status: "running", output: "" });
+    return { id, phase };
   };
-  const done = (id, ok, output) => {
-    db.updateToolRun.run(ok ? "done" : "failed", ok ? 0 : 1, String(output || ""), id);
-    emit(chatId, "phase", { phase: "", detail: "", status: ok ? "done" : "failed", output: String(output || "") });
+  const done = (runInfo, ok, output) => {
+    db.updateToolRun.run(ok ? "done" : "failed", ok ? 0 : 1, String(output || ""), runInfo.id);
+    emit(chatId, "phase", { id: runInfo.id, phase: runInfo.phase, status: ok ? "done" : "failed", output: String(output || "") });
   };
 
   try {

@@ -294,8 +294,10 @@ async function approve() {
 }
 
 /* ===== SSE 实时进度 ===== */
+let doneReceived = false;
 function connectSSE(cid) {
   if (sse) sse.close();
+  doneReceived = false;
   $("runBadge").textContent = "running";
   $("runBadge").className = "badge running";
   sse = new EventSource(`/api/chats/${cid}/events`);
@@ -304,36 +306,47 @@ function connectSSE(cid) {
     appendStep(p);
   });
   sse.addEventListener("done", (ev) => {
+    doneReceived = true;
     const d = JSON.parse(ev.data);
     $("runBadge").textContent = "done";
     $("runBadge").className = "badge done";
+    // 兜底：强制结束所有还在转圈的步骤
+    document.querySelectorAll("#runlog .step.active").forEach(s => {
+      s.classList.remove("active"); s.classList.add("ok");
+      const st = s.querySelector(".s-status"); if (st) st.textContent = "✓";
+    });
     if (d.url) showPreview({ site_path: d.url, version_no: d.version });
     $("btnDownload").disabled = false;
     sse.close();
   });
-  sse.addEventListener("error", (ev) => {
-    $("runBadge").textContent = "failed";
-    $("runBadge").className = "badge failed";
+  sse.addEventListener("error", () => {
+    if (!doneReceived) {
+      $("runBadge").textContent = "failed";
+      $("runBadge").className = "badge failed";
+    }
   });
-  sse.onerror = () => {};
 }
 
-let stepCount = 0;
 const STEP_ICONS = { generate: "🧠", checkui: "🖼️", deploy: "🚀", plan: "📋" };
 function appendStep(p) {
   const box = $("runlog");
-  if (p.status === "done" || p.status === "failed") {
-    const last = box.lastElementChild;
-    if (last && last.dataset.phase === p.phase && !last.classList.contains("ok") && !last.classList.contains("fail")) {
-      last.classList.add(p.status === "done" ? "ok" : "fail");
-      last.querySelector(".s-status").textContent = p.status === "done" ? "✓" : "✗";
-      if (p.output) last.querySelector(".s-detail").textContent += " · " + p.output;
+  // 若已存在同 phase 步骤 → 更新状态（不新建空行）
+  if (p.phase) {
+    const existing = [...box.children].find(s => s.dataset.phase === p.phase);
+    if (existing) {
+      if (p.status === "done" || p.status === "failed") {
+        existing.classList.remove("active");
+        existing.classList.add(p.status === "done" ? "ok" : "fail");
+        const st = existing.querySelector(".s-status"); if (st) st.textContent = p.status === "done" ? "✓" : "✗";
+        const dt = existing.querySelector(".s-detail");
+        if (dt && p.output) dt.textContent += (dt.textContent ? " · " : "") + p.output;
+      }
       return;
     }
   }
   const d = el("div", "step");
-  d.dataset.phase = p.phase;
-  d.innerHTML = `<div class="ico">${STEP_ICONS[p.phase] || "⚙️"}</div><div class="s-body"><div class="s-title">${esc(p.detail || p.phase)}</div><div class="s-detail">${esc(p.output || "")}</div></div><div class="s-status">${p.status === "done" ? "✓" : p.status === "failed" ? "✗" : "…"}</div>`;
+  d.dataset.phase = p.phase || "";
+  d.innerHTML = `<div class="ico">${STEP_ICONS[p.phase] || "⚙️"}</div><div class="s-body"><div class="s-title">${esc(p.detail || p.phase || "执行")}</div><div class="s-detail">${esc(p.output || "")}</div></div><div class="s-status">${p.status === "done" ? "✓" : p.status === "failed" ? "✗" : "…"}</div>`;
   if (p.status === "done") d.classList.add("ok");
   if (p.status === "failed") d.classList.add("fail");
   if (!p.status || p.status === "running") d.classList.add("active");
