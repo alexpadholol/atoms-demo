@@ -1,0 +1,20 @@
+{
+  "name": "atoms-demo",
+  "version": "1.0.0",
+  "description": "AI Agent 平台笔试原型：LLM 规划 → 代码生成 → 校验 → 部署 → 预览/下载",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "axios": "^1.19.0",
+    "better-sqlite3": "^13.0.3",
+    "express": "^5.2.1"
+  }
+}
