@@ -141,7 +141,7 @@ docker run -p 8787:8787 -e DEEPSEEK_API_KEY=sk-xxx atoms-demo
 - [x] 至少一个延展能力（产物下载 + 部署手册）
 - [x] 产物可下载、含部署手册、离线可跑
 - [ ] 在线访问链接（部署后回填）
-- [x] GitHub 源码链接（仓库地址回填）
+- [x] GitHub 源码链接：https://github.com/alexpadholol/atoms-demo
 - [x] 简要说明文档（本文档）
 
 ---
