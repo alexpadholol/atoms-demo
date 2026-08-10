@@ -107,29 +107,8 @@
       <span class="meta" id="metaProj" style="display:none">项目: <b id="mProj">-</b></span>
       <button class="btn ghost" id="btnHome" style="display:none">← 返回</button>
       <button class="btn" id="btnDownload" disabled>⬇ 下载产物</button>
-      <button class="btn ghost" id="btnLogout" style="display:none">退出</button>
     </div>
   </header>
-
-  <!-- 登录 / 注册 -->
-  <section id="viewLogin">
-    <div style="max-width:420px;margin:80px auto">
-      <div class="card">
-        <div class="logo" style="font-size:22px;margin-bottom:20px">Atoms-Demo</div>
-        <div style="display:flex;gap:8px;margin-bottom:16px">
-          <button class="btn" id="tabLogin" style="flex:1">登录</button>
-          <button class="btn ghost" id="tabRegister" style="flex:1">注册</button>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:12px">
-          <input id="authEmail" placeholder="邮箱（可留空，留空则用用户名注册）" style="display:none;background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
-          <input id="authUser" placeholder="用户名 / 邮箱" style="background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
-          <input id="authPass" type="password" placeholder="密码（至少 4 位）" style="background:var(--panel2);border:1px solid var(--border);color:#fff;border-radius:12px;padding:13px 15px;font-size:14px;outline:none"/>
-          <div id="authErr" style="color:var(--red);font-size:13px;min-height:18px"></div>
-          <button class="btn" id="btnAuth">登录</button>
-        </div>
-      </div>
-    </div>
-  </section>
 
   <!-- 首页：项目列表 -->
   <section id="viewHome">
@@ -197,68 +176,17 @@
 const $ = (id) => document.getElementById(id);
 let projects = [], proj = null, chat = null, sse = null;
 let allChats = [];
-let authUser = null, authMode = "login";
 
 const el = (tag, cls, html) => { const d = document.createElement(tag); if (cls) d.className = cls; if (html) d.innerHTML = html; return d; };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
-function getToken() { return localStorage.getItem("atoms_token") || ""; }
-function setToken(t) { t ? localStorage.setItem("atoms_token", t) : localStorage.removeItem("atoms_token"); }
-
 async function api(url, opts = {}) {
   const headers = { ...(opts.headers || {}) };
-  const t = getToken();
-  if (t) headers.Authorization = "Bearer " + t;
   if (opts.body) headers["Content-Type"] = "application/json";
   const r = await fetch(url, { ...opts, headers });
   const j = await r.json();
-  if (j.code === 401) { showLogin(); throw new Error(j.message || "未登录"); }
   if (j.code !== 0) throw new Error(j.message || "请求失败");
   return j.data;
-}
-
-/* ===== 认证 ===== */
-function showLogin() {
-  setToken("");
-  $("viewLogin").classList.remove("hidden");
-  $("viewHome").classList.add("hidden");
-  $("viewWork").classList.add("hidden");
-  $("btnLogout").style.display = "none";
-  $("btnHome").style.display = "none";
-  $("metaProj").style.display = "none";
-  $("btnDownload").disabled = true;
-  if (sse) { sse.close(); sse = null; }
-}
-async function doAuth() {
-  const account = $("authUser").value.trim();
-  const email = $("authEmail").value.trim().toLowerCase();
-  const password = $("authPass").value;
-  $("authErr").textContent = "";
-  try {
-    const body = authMode === "register"
-      ? { username: account, email, password }  // 填了邮箱即邮箱注册，username 可留空（自动取邮箱前缀）
-      : { account, password };
-    const d = await api(`/api/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) });
-    setToken(d.token);
-    authUser = d.user;
-    await loadHome();
-    $("viewLogin").classList.add("hidden");
-    $("btnLogout").style.display = "";
-  } catch (e) { $("authErr").textContent = e.message; }
-}
-async function logout() {
-  try { await api("/api/auth/logout", { method: "POST" }); } catch (_) {}
-  showLogin();
-}
-async function bootstrap() {
-  if (!getToken()) return showLogin();
-  try {
-    const d = await api("/api/auth/me");
-    authUser = d.user;
-    $("viewLogin").classList.add("hidden");
-    $("btnLogout").style.display = "";
-    loadHome();
-  } catch (e) { showLogin(); }
 }
 
 /* ===== 首页 ===== */
@@ -380,7 +308,7 @@ function connectSSE(cid) {
   doneReceived = false;
   $("runBadge").textContent = "running";
   $("runBadge").className = "badge running";
-  sse = new EventSource(`/api/chats/${cid}/events?token=${encodeURIComponent(getToken())}`);
+  sse = new EventSource(`/api/chats/${cid}/events`);
   sse.addEventListener("phase", (ev) => {
     const p = JSON.parse(ev.data);
     appendStep(p);
@@ -471,7 +399,7 @@ function showPreview(v) {
 async function download() {
   if (!chat) return;
   try {
-    const r = await fetch(`/api/artifact/download?chatId=${chat.id}`, { headers: { Authorization: "Bearer " + getToken() } });
+    const r = await fetch(`/api/artifact/download?chatId=${chat.id}`);
     if (!r.ok) throw new Error("下载失败 " + r.status);
     const blob = await r.blob();
     const a = document.createElement("a");
@@ -488,15 +416,10 @@ $("logoHome").onclick = loadHome;
 $("btnBuild").onclick = submitRequirement;
 $("btnApprove").onclick = approve;
 $("btnDownload").onclick = download;
-$("btnLogout").onclick = logout;
-$("btnAuth").onclick = doAuth;
-$("tabLogin").onclick = () => { authMode = "login"; $("tabLogin").className = "btn"; $("tabRegister").className = "btn ghost"; $("btnAuth").textContent = "登录"; $("authUser").placeholder = "用户名 / 邮箱"; $("authEmail").style.display = "none"; $("authErr").textContent = ""; };
-$("tabRegister").onclick = () => { authMode = "register"; $("tabRegister").className = "btn"; $("tabLogin").className = "btn ghost"; $("btnAuth").textContent = "注册"; $("authUser").placeholder = "用户名（可留空，自动取邮箱前缀）"; $("authEmail").style.display = ""; $("authErr").textContent = ""; };
-$("authPass").addEventListener("keydown", e => { if (e.key === "Enter") doAuth(); });
 $("input").addEventListener("keydown", e => { if (e.key === "Enter") submitRequirement(); });
 $("chips").addEventListener("click", e => { if (e.target.classList.contains("chip")) $("input").value = e.target.textContent; });
 
-bootstrap();
+loadHome();
 </script>
 </body>
 </html>
