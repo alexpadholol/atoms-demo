@@ -27,6 +27,20 @@ app.use(express.json());
 fs.mkdirSync(WORKSPACE, { recursive: true });
 fs.mkdirSync(SITES_DIR, { recursive: true });
 
+// 统一给文本/JSON 响应加 charset=utf-8，避免中文乱码
+app.use((req, res, next) => {
+  const orig = res.setHeader.bind(res);
+  res.setHeader = (name, value) => {
+    if (/^content-type$/i.test(name) && typeof value === "string") {
+      if (/^text\/|^application\/json/.test(value) && !/charset=/i.test(value)) {
+        value += "; charset=utf-8";
+      }
+    }
+    return orig(name, value);
+  };
+  next();
+});
+
 process.on("uncaughtException", (e) => console.error("UNCAUGHT:", e));
 process.on("unhandledRejection", (e) => console.error("UNHANDLED:", e));
 process.on("exit", (c) => console.error("EXIT code:", c));
@@ -294,7 +308,8 @@ app.get("/api/artifact/download", authMiddleware, (req, res) => {
   const baseDir = path.join(tmp, "site");
   copyDir(siteDir, baseDir);
   const manual = deployManual({ name: chat.title, url: `https://${req.get("host")}/api/sites/${chatId}/v${ver.version_no}/` });
-  fs.writeFileSync(path.join(baseDir, "部署手册.md"), manual);
+  // 加 UTF-8 BOM：避免中文 Windows 编辑器按 ANSI(GBK) 打开导致乱码
+  fs.writeFileSync(path.join(baseDir, "部署手册.md"), "\uFEFF" + manual);
 
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="atoms-demo-artifact.zip"`);
