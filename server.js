@@ -8,6 +8,7 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const iconv = require("iconv-lite");
 const archiver = require("archiver");
 const { uuid, ...db } = require("./scripts/db");
 const { planRequirement } = require("./scripts/planner");
@@ -22,7 +23,21 @@ const WEB_DIR = path.join(__dirname, "web");
 const WORKSPACE = path.join(__dirname, "workspace");
 const SITES_DIR = path.join(__dirname, "sites");
 
-app.use(express.json());
+// JSON 解析：捕获原始字节，兼容 UTF-8（浏览器）与 GBK（Windows 终端 curl）
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
+app.use((req, res, next) => {
+  if (req.rawBody && req.rawBody.length) {
+    try {
+      const utf8 = req.rawBody.toString("utf8");
+      if (utf8.includes("\uFFFD")) {
+        // 说明终端用 GBK 提交了中文 → 用 GBK 重新解析，避免存入乱码
+        const gbk = iconv.decode(req.rawBody, "gbk");
+        req.body = JSON.parse(gbk);
+      }
+    } catch (_) { /* 保持原 body */ }
+  }
+  next();
+});
 fs.mkdirSync(WORKSPACE, { recursive: true });
 fs.mkdirSync(SITES_DIR, { recursive: true });
 
