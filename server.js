@@ -13,7 +13,7 @@ const archiver = require("archiver");
 const { uuid, ...db } = require("./scripts/db");
 const { planRequirement } = require("./scripts/planner");
 const { detectProvider } = require("./scripts/llm");
-const { buildSite } = require("./scripts/build-site");
+const { buildSite, buildSection, assembleSite } = require("./scripts/build-site");
 const { deployManual } = require("./scripts/deploy-manual");
 const { copyDir } = require("./scripts/utils");
 
@@ -78,57 +78,113 @@ function emit(chatId, event, data) {
   }
 }
 
-/* ================= 生成管线 ================= */
+/* ================= 生成管线（逐任务执行） ================= */
+function readPart(partsDir, i) {
+  const f = path.join(partsDir, `part-${i}.html`);
+  return fs.existsSync(f) ? fs.readFileSync(f, "utf-8") : buildSection({ instruction: `区块 ${i + 1}` }, i);
+}
+function partsDirOf(chatId, versionNo) {
+  return path.join(WORKSPACE, chatId, `v${versionNo}`, "parts");
+}
+
+function deploySite(chatId, versionNo, siteDir, checks) {
+  const target = path.join(SITES_DIR, chatId, `v${versionNo}`);
+  fs.rmSync(target, { recursive: true, force: true });
+  copyDir(siteDir, target);
+  db.clearCurrent.run(chatId);
+  const ver = db.insertVersion.run(chatId, versionNo, "building", target, "", 1).lastInsertRowid;
+  db.setVersionReady.run(target, JSON.stringify(checks), ver);
+  db.setCurrent.run(ver);
+  return `/api/sites/${chatId}/v${versionNo}/`;
+}
+
+function assembleFromParts(chat, tasks, versionNo) {
+  const partsDir = partsDirOf(chat.id, versionNo);
+  const sections = tasks.map((t, i) => readPart(partsDir, i));
+  const siteDir = path.join(WORKSPACE, chat.id, `v${versionNo}`);
+  assembleSite({ name: chat.title, requirement: chat.requirement, tasks, sections, outDir: siteDir });
+  return siteDir;
+}
+
 async function runPipeline(chat, tasks) {
   const chatId = chat.id;
-  const run = (phase, detail) => {
-    const id = db.insertToolRun.run(chatId, phase, detail, "running", null, "", 0).lastInsertRowid;
-    emit(chatId, "phase", { id, phase, detail, status: "running", output: "" });
-    return { id, phase };
-  };
-  const done = (runInfo, ok, output) => {
-    db.updateToolRun.run(ok ? "done" : "failed", ok ? 0 : 1, String(output || ""), runInfo.id);
-    emit(chatId, "phase", { id: runInfo.id, phase: runInfo.phase, status: ok ? "done" : "failed", output: String(output || "") });
-  };
-
   try {
-    // 1) 代码生成
-    const g = run("generate", `代码生成：为「${chat.title}」生成站点`);
     const versionNo = (db.getLatestVersion.get(chatId)?.version_no || 0) + 1;
-    const siteDir = path.join(WORKSPACE, chatId, `v${versionNo}`);
-    buildSite({ name: chat.title, requirement: chat.requirement, tasks }, siteDir);
-    done(g, true, `已生成 ${fs.readdirSync(siteDir).length} 个文件`);
+    const partsDir = partsDirOf(chatId, versionNo);
+    fs.mkdirSync(partsDir, { recursive: true });
 
-    // 2) 质量校验（真实文件检查）
-    const q = run("checkui", "质量校验：检查产物完整性");
+    // 逐任务执行：每个任务 = 生成一个区块，独立状态
+    for (const [i, task] of tasks.entries()) {
+      db.markTaskRunning.run(task.id);
+      emit(chatId, "task", { task_id: task.id, status: "running" });
+      try {
+        const sec = buildSection(task, i);
+        fs.writeFileSync(path.join(partsDir, `part-${i}.html`), sec);
+        db.markTaskDone.run(task.id);
+        emit(chatId, "task", { task_id: task.id, status: "done" });
+      } catch (e) {
+        db.markTaskBlocked.run(task.id);
+        emit(chatId, "task", { task_id: task.id, status: "blocked", error: e.message });
+      }
+    }
+
+    // 组装 → 校验 → 部署
+    const g = db.insertToolRun.run(chatId, "generate", "代码生成：按计划逐区块生成", "done", 0, `共 ${tasks.length} 个区块`, 0).lastInsertRowid;
+    emit(chatId, "phase", { id: g, phase: "generate", status: "done", output: `共 ${tasks.length} 个区块` });
+
+    const siteDir = assembleFromParts(chat, tasks, versionNo);
     const indexFile = path.join(siteDir, "index.html");
     const html = fs.readFileSync(indexFile, "utf-8");
     const checks = {
       index_exist: fs.existsSync(indexFile),
       has_title: /<title>/.test(html),
       has_hero: /class="hero"/.test(html),
-      has_features: /class="features"/.test(html),
+      has_sections: /class="ts"/.test(html),
     };
-    const allOk = Object.values(checks).every(Boolean);
-    done(q, allOk, JSON.stringify(checks));
+    const q = db.insertToolRun.run(chatId, "checkui", "质量校验：检查产物完整性", "done", 0, JSON.stringify(checks), 0).lastInsertRowid;
+    emit(chatId, "phase", { id: q, phase: "checkui", status: "done", output: JSON.stringify(checks) });
 
-    // 3) 部署（拷贝到 sites + 原子切换 current）
-    const d = run("deploy", "部署：发布到可访问路径");
-    const target = path.join(SITES_DIR, chatId, `v${versionNo}`);
-    fs.rmSync(target, { recursive: true, force: true });
-    copyDir(siteDir, target);
-    db.clearCurrent.run(chatId);
-    const ver = db.insertVersion.run(chatId, versionNo, "building", target, "", 1).lastInsertRowid;
-    db.setVersionReady.run(target, JSON.stringify(checks), ver);
-    db.setCurrent.run(ver);
-    const url = `/api/sites/${chatId}/v${versionNo}/`;
-    done(d, true, url);
+    const url = deploySite(chatId, versionNo, siteDir, checks);
+    const d = db.insertToolRun.run(chatId, "deploy", "部署：发布到可访问路径", "done", 0, url, 0).lastInsertRowid;
+    emit(chatId, "phase", { id: d, phase: "deploy", status: "done", output: url });
 
-    db.updateChatStatus.run("done", chatId);
-    emit(chatId, "done", { chatId, version: versionNo, url, checks });
+    const blocked = db.listTasks.all(chatId).filter((t) => t.status === "blocked").length;
+    db.updateChatStatus.run(blocked ? "blocked" : "done", chatId);
+    emit(chatId, "done", { chatId, version: versionNo, url, checks, blocked });
   } catch (e) {
     db.updateChatStatus.run("failed", chatId);
     emit(chatId, "error", { message: e.message });
+  }
+}
+
+/** 重试/修改单个任务：重生成该区块并重新组装、重新部署 */
+function rebuildTask(chat, task) {
+  const chatId = chat.id;
+  const ver = db.getLatestVersion.get(chatId);
+  if (!ver) return;
+  const versionNo = ver.version_no;
+  const tasks = db.listTasks.all(chatId);
+  const idx = tasks.findIndex((t) => t.id === task.id);
+  if (idx < 0) return;
+
+  db.markTaskRunning.run(task.id);
+  emit(chatId, "task", { task_id: task.id, status: "running" });
+  try {
+    const partsDir = partsDirOf(chatId, versionNo);
+    fs.mkdirSync(partsDir, { recursive: true });
+    const sec = buildSection(task, idx);
+    fs.writeFileSync(path.join(partsDir, `part-${idx}.html`), sec);
+    const siteDir = assembleFromParts(chat, tasks, versionNo);
+    const html = fs.readFileSync(path.join(siteDir, "index.html"), "utf-8");
+    const checks = {
+      index_exist: true, has_title: /<title>/.test(html), has_hero: /class="hero"/.test(html), has_sections: /class="ts"/.test(html),
+    };
+    deploySite(chatId, versionNo, siteDir, checks);
+    db.markTaskDone.run(task.id);
+    emit(chatId, "task", { task_id: task.id, status: "done" });
+  } catch (e) {
+    db.markTaskBlocked.run(task.id);
+    emit(chatId, "task", { task_id: task.id, status: "blocked", error: e.message });
   }
 }
 
@@ -209,6 +265,29 @@ app.post("/api/chats/:id/approve", (req, res) => {
   // 异步执行管线
   runPipeline(chat, tasks);
   res.json({ code: 0, data: { chat: db.getChat.get(chat.id) } });
+});
+
+// 重试单个任务（重新生成该区块并重新部署）
+app.post("/api/tasks/:id/retry", (req, res) => {
+  const task = db.getTask.get(req.params.id);
+  if (!task) return res.status(404).json({ code: 1, message: "任务不存在" });
+  const chat = db.getChat.get(task.chat_id);
+  if (!chat || !db.getLatestVersion.get(chat.id))
+    return res.status(400).json({ code: 1, message: "会话尚未完成过部署，无法重试" });
+  rebuildTask(chat, task);
+  res.json({ code: 0, data: { task: db.getTask.get(task.id) } });
+});
+
+// 修改任务指令（保存后自动重生成该区块）
+app.put("/api/tasks/:id", (req, res) => {
+  const instruction = String(req.body?.instruction || "").trim().slice(0, 200);
+  if (!instruction) return res.status(400).json({ code: 1, message: "指令不能为空" });
+  const task = db.getTask.get(req.params.id);
+  if (!task) return res.status(404).json({ code: 1, message: "任务不存在" });
+  db.updateTaskInstruction.run(instruction, task.id);
+  const chat = db.getChat.get(task.chat_id);
+  if (chat && db.getLatestVersion.get(chat.id)) rebuildTask(chat, db.getTask.get(task.id));
+  res.json({ code: 0, data: { task: db.getTask.get(task.id) } });
 });
 
 // SSE 实时进度

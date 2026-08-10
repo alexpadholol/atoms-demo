@@ -108,8 +108,11 @@ const insertTask = db.prepare(
 );
 const listTasks = db.prepare("SELECT * FROM tasks WHERE chat_id=? ORDER BY sort_order");
 const markTasksApproved = db.prepare("UPDATE tasks SET status='approved' WHERE chat_id=? AND status='pending'");
+const markTaskRunning = db.prepare("UPDATE tasks SET status='running' WHERE id=?");
 const markTaskDone = db.prepare("UPDATE tasks SET status='done' WHERE id=?");
 const markTaskBlocked = db.prepare("UPDATE tasks SET status='blocked' WHERE id=?");
+const updateTaskInstruction = db.prepare("UPDATE tasks SET instruction=? WHERE id=?");
+const getTask = db.prepare("SELECT * FROM tasks WHERE id=?");
 
 // ---------- Tool runs ----------
 const insertToolRun = db.prepare(
@@ -137,7 +140,8 @@ module.exports = {
   insertProject, listProjects, getProject,
   insertChat, getChat, updateChatStatus, resetStuckRunning, updateChatMeta, listChatsByProject,
   insertMessage, listMessages,
-  clearTasks, insertTask, listTasks, markTasksApproved, markTaskDone, markTaskBlocked,
+  clearTasks, insertTask, listTasks, markTasksApproved, markTaskRunning, markTaskDone, markTaskBlocked,
+  updateTaskInstruction, getTask,
   insertToolRun, updateToolRun, listToolRuns,
   insertVersion, getLatestVersion, setVersionReady, setVersionFailed, clearCurrent, setCurrent,
 };

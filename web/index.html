@@ -69,11 +69,21 @@
   .task{display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--panel2)}
   .task .chk{width:17px;height:17px;border-radius:5px;border:1px solid var(--border);flex-shrink:0;margin-top:2px;display:flex;align-items:center;justify-content:center;font-size:11px}
   .task.done .chk{background:var(--green);border-color:var(--green);color:#0a0a0f}
-  .task.blocked .chk{background:var(--red);border-color:var(--red)}
+  .task.blocked .chk{background:var(--red);border-color:var(--red);color:#0a0a0f}
+  .task.running .chk{background:rgba(124,108,255,.2);border-color:var(--purple);color:var(--purple)}
   .task .t-body{flex:1}
   .task .t-ins{font-size:13px;color:var(--text)}
   .task .t-acc{font-size:12px;color:var(--dim);margin-top:2px}
-  .task.done{opacity:.75}
+  .task .t-status{font-size:11px;font-weight:600;margin-left:8px;padding:1px 8px;border-radius:99px}
+  .task .t-status.running{background:rgba(124,108,255,.15);color:var(--purple)}
+  .task .t-status.done{background:rgba(52,211,153,.12);color:var(--green)}
+  .task .t-status.blocked{background:rgba(248,113,113,.12);color:var(--red)}
+  .task .t-status.pending,.task .t-status.approved{background:rgba(255,255,255,.06);color:var(--muted)}
+  .task .t-actions{margin-top:6px;display:flex;gap:8px}
+  .mini{background:var(--grad);color:#fff;border:none;border-radius:8px;padding:4px 12px;font-size:12px;cursor:pointer}
+  .mini.ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
+  .mini.ghost:hover{border-color:var(--purple);color:#fff}
+  .task.done{opacity:.85}
 
   .step{display:flex;gap:10px;padding:9px 0;border-bottom:1px dashed var(--border);align-items:flex-start}
   .step:last-child{border-bottom:none}
@@ -294,7 +304,6 @@ async function approve() {
   if (!chat) return;
   $("btnApprove").disabled = true;
   $("planBadge").textContent = "已批准，执行中…";
-  document.querySelectorAll("#tasks .task").forEach(t => t.classList.add("done"));
   await api(`/api/chats/${chat.id}/approve`, { method: "POST" });
   $("runCard").classList.remove("hidden");
   $("runlog").innerHTML = "";
@@ -312,6 +321,9 @@ function connectSSE(cid) {
   sse.addEventListener("phase", (ev) => {
     const p = JSON.parse(ev.data);
     appendStep(p);
+  });
+  sse.addEventListener("task", (ev) => {
+    updateTaskCard(JSON.parse(ev.data));
   });
   sse.addEventListener("done", (ev) => {
     doneReceived = true;
@@ -373,12 +385,48 @@ function renderMessages(msgs) {
 
 function renderTasks(tasks, status) {
   const box = $("tasks"); box.innerHTML = "";
-  tasks.forEach((t, i) => {
-    const d = el("div", "task");
-    d.innerHTML = `<div class="chk"></div><div class="t-body"><div class="t-ins">${i + 1}. ${esc(t.instruction)}</div><div class="t-acc">验收：${esc(t.acceptance || "")}</div></div>`;
-    if (t.status === "done" || status === "running" || status === "done") d.classList.add("done");
+  (tasks || []).forEach((t, i) => {
+    const st = t.status || "pending";
+    const d = el("div", "task " + (st === "done" ? "done" : st === "blocked" ? "blocked" : st === "running" ? "running" : ""));
+    d.dataset.taskId = t.id;
+    const map = { pending: "待执行", approved: "已批准", running: "执行中…", done: "已完成", blocked: "失败" };
+    const actions = st === "blocked"
+      ? `<button class="mini" onclick="retryTask('${t.id}')">↻ 重试</button><button class="mini ghost" onclick="editTask('${t.id}', ${JSON.stringify(t.instruction)})">✎ 修改</button>`
+      : "";
+    d.innerHTML = `<div class="chk">${st === "done" ? "✓" : st === "blocked" ? "✗" : ""}</div>
+      <div class="t-body">
+        <div class="t-ins">${i + 1}. ${esc(t.instruction)} <span class="t-status ${st}">${map[st] || st}</span></div>
+        <div class="t-acc">验收：${esc(t.acceptance || "")}</div>
+        <div class="t-actions">${actions}</div>
+      </div>`;
     box.appendChild(d);
   });
+}
+
+function updateTaskCard(ev) {
+  const t = document.querySelector(`#tasks .task[data-task-id="${ev.task_id}"]`);
+  if (!t) return;
+  t.className = "task" + (ev.status === "done" ? " done" : ev.status === "blocked" ? " blocked" : ev.status === "running" ? " running" : "");
+  const chk = t.querySelector(".chk");
+  if (chk) chk.textContent = ev.status === "done" ? "✓" : ev.status === "blocked" ? "✗" : "";
+  const st = t.querySelector(".t-status");
+  const map = { pending: "待执行", approved: "已批准", running: "执行中…", done: "已完成", blocked: "失败" };
+  if (st) { st.textContent = map[ev.status] || ev.status; st.className = "t-status " + ev.status; }
+  const act = t.querySelector(".t-actions");
+  if (act) {
+    act.innerHTML = ev.status === "blocked"
+      ? `<button class="mini" onclick="retryTask('${ev.task_id}')">↻ 重试</button><button class="mini ghost" onclick="editTask('${ev.task_id}', ${JSON.stringify(ev.instruction || "")})">✎ 修改</button>`
+      : "";
+  }
+}
+
+async function retryTask(id) {
+  try { await api(`/api/tasks/${id}/retry`, { method: "POST" }); } catch (e) { alert(e.message); }
+}
+async function editTask(id, oldInstruction) {
+  const next = prompt("修改任务指令：", oldInstruction || "");
+  if (!next || next.trim() === (oldInstruction || "")) return;
+  try { await api(`/api/tasks/${id}`, { method: "PUT", body: JSON.stringify({ instruction: next.trim() }) }); } catch (e) { alert(e.message); }
 }
 
 function renderRuns(runs) {
