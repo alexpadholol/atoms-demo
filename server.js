@@ -255,8 +255,14 @@ app.get("/api/health", (req, res) => {
 });
 
 /* ================= 前端 ================= */
-app.use(express.static(WEB_DIR));
-app.get("/", (req, res) => res.sendFile(path.join(WEB_DIR, "index.html")));
+// 强制不缓存 HTML，避免浏览器用旧版本导致乱码/功能不一致
+const noStore = (res, p) => {
+  if (/\.html?$/.test(p) || p === "/") {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  }
+};
+app.use(express.static(WEB_DIR, { etag: true, setHeaders: noStore }));
+app.get("/", (req, res) => res.sendFile(path.join(WEB_DIR, "index.html"), { setHeaders: (r) => r.setHeader("Cache-Control", "no-store, no-cache, must-revalidate") }));
 
 // 启动修复：上次进程异常退出残留的 running 会话（管线已不在运行，
 // 若不处理会导致前端打开后永远等待 done → "执行总是完不成"）
