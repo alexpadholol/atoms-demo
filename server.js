@@ -157,6 +157,40 @@ async function runPipeline(chat, tasks) {
   }
 }
 
+/**
+ * 状态对账：修复不一致状态
+ * 场景：任务全部完成但会话 failed / 无产物（旧版本崩溃遗留）
+ * 处理：任务全 done 时强制恢复 done；无产物则重建版本
+ */
+function repairChat(chatId) {
+  const chat = db.getChat.get(chatId);
+  if (!chat) return;
+  const tasks = db.listTasks.all(chatId);
+  if (!tasks.length) return;
+  const allDone = tasks.every((t) => t.status === "done");
+  const ver = db.getLatestVersion.get(chatId);
+  if (allDone && (!ver || ver.status !== "ready")) {
+    try {
+      const versionNo = ver ? ver.version_no : 1;
+      const partsDir = partsDirOf(chatId, versionNo);
+      fs.mkdirSync(partsDir, { recursive: true });
+      tasks.forEach((t, i) => {
+        const f = path.join(partsDir, `part-${i}.html`);
+        if (!fs.existsSync(f)) fs.writeFileSync(f, buildSection(t, i));
+      });
+      const siteDir = assembleFromParts(chat, tasks, versionNo);
+      const html = fs.readFileSync(path.join(siteDir, "index.html"), "utf-8");
+      const checks = {
+        index_exist: true, has_title: /<title>/.test(html), has_hero: /class="hero"/.test(html), has_sections: /class="ts"/.test(html),
+      };
+      deploySite(chatId, versionNo, siteDir, checks);
+    } catch (e) {
+      console.error("[repair]", e.message);
+    }
+  }
+  if (allDone) db.updateChatStatus.run("done", chatId);
+}
+
 /** 重试/修改单个任务：重生成该区块并重新组装、重新部署 */
 function rebuildTask(chat, task) {
   const chatId = chat.id;
@@ -206,7 +240,9 @@ app.get("/api/projects", (req, res) => {
 app.get("/api/projects/:id", (req, res) => {
   const p = db.getProject.get(req.params.id);
   if (!p) return res.status(404).json({ code: 1, message: "项目不存在" });
-  res.json({ code: 0, data: { ...p, chats: db.listChatsByProject.all(p.id) } });
+  // 触发状态对账，让侧边栏会话状态正确
+  db.listChatsByProject.all(p.id).forEach((c) => repairChat(c.id));
+  res.json({ code: 0, data: { ...db.getProject.get(p.id), chats: db.listChatsByProject.all(p.id) } });
 });
 
 // 会话：发起需求 → LLM 规划
@@ -237,14 +273,15 @@ app.post("/api/projects/:pid/chats", async (req, res) => {
   }
 });
 
-// 会话详情
+// 会话详情（先做状态对账，修复旧数据不一致）
 app.get("/api/chats/:id", (req, res) => {
   const chat = db.getChat.get(req.params.id);
   if (!chat) return res.status(404).json({ code: 1, message: "会话不存在" });
+  repairChat(chat.id);
   res.json({
     code: 0,
     data: {
-      chat,
+      chat: db.getChat.get(chat.id),
       messages: db.listMessages.all(chat.id),
       tasks: db.listTasks.all(chat.id),
       toolRuns: db.listToolRuns.all(chat.id),
