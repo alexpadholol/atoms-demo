@@ -115,22 +115,33 @@ node server.js
 
 无需数据库安装、无需 Docker，SQLite 自动建库。
 
-## 六、在线部署（Render / Railway / 任意 Node 平台）
+## 六、在线部署（关键：必须运行 Node 后端）
 
-**Docker 方式（推荐）**：
-```bash
-docker build -t atoms-demo .
-docker run -p 8787:8787 -e DEEPSEEK_API_KEY=sk-xxx atoms-demo
-```
+> ⚠️ **本应用是全栈应用**（Node + Express + SQLite + SSE）。**不能只部署前端 `web/` 目录**（如 GitHub Pages / Netlify Drop / 静态托管），否则页面能打开但 `/api/*` 全部 404。请部署**整个仓库并运行 `node server.js`**。
 
-**Render.com**：
-1. New → Web Service → 连接本 GitHub 仓库
-2. Build Command: `npm install`
-3. Start Command: `node server.js`
-4. 环境变量添加 `DEEPSEEK_API_KEY`
+**部署后自检**：访问 `https://你的域名/api/health`，返回 `{"code":0,...}` 即后端正常；若 404 说明没跑后端。
+
+### 方式一：Render.com（推荐，免费）
+1. New → Web Service → 连接本 GitHub 仓库 `alexpadholol/atoms-demo`
+2. **Build Command**: `npm install`
+3. **Start Command**: `node server.js`
+4. 环境变量：`DEEPSEEK_API_KEY`（必填，LLM 规划用）
 5. Deploy 后即得在线链接
 
-> 注意：SQLite 数据存在容器本地磁盘，免费实例重启会重置；如需持久化请挂载磁盘卷。
+### 方式二：Docker（任意 VPS / 云服务器）
+```bash
+docker build -t atoms-demo .
+docker run -d -p 8787:8787 -e DEEPSEEK_API_KEY=sk-xxx \
+  -v $(pwd)/data:/app/data -v $(pwd)/sites:/app/sites atoms-demo
+# 访问 http://服务器IP:8787
+```
+> Dockerfile 使用 `node:22-slim`（glibc）——**不要改成 alpine**，否则 `better-sqlite3` 原生模块无法加载导致后端崩溃。
+
+### 方式三：Railway / Fly.io / Vercel（Node 服务）
+- Railway / Fly：直接连接仓库，自动识别 `node server.js`，添加 `DEEPSEEK_API_KEY`
+- Vercel：选 **Node Server**（非静态），入口 `server.js`
+
+> 注意：SQLite 数据存在容器本地磁盘，免费实例重启会重置；如需持久化请挂载磁盘卷（Docker 用 `-v`，Render 用持久磁盘）。
 
 ## 七、提交清单（对照笔试要求）
 

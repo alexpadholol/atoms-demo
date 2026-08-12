@@ -110,6 +110,11 @@
 </head>
 <body>
 <div class="wrap">
+  <div id="apiBanner" class="hidden" style="background:rgba(248,113,113,.12);border:1px solid var(--red);color:var(--red);border-radius:12px;padding:14px 18px;margin-top:12px;font-size:14px">
+    ⚠️ <b>后端 API 未连接</b>：页面能打开，但 /api/* 全部 404 —— 说明当前只部署了前端静态文件。
+    <br/>本应用需要 <b>Node.js 后端（server.js）</b> 运行，请用 Render / Railway / Docker 部署整个仓库，而不是只部署 web/ 目录。
+  </div>
+
   <header>
     <div class="logo" id="logoHome">Atoms-Demo <small>AI Agent 平台笔试原型</small></div>
     <div class="hright">
@@ -201,6 +206,14 @@ async function api(url, opts = {}) {
 
 /* ===== 首页 ===== */
 async function loadHome() {
+  // 后端健康检查：若失败说明可能只部署了前端静态文件
+  try {
+    const resp = await fetch("/api/health");
+    if (resp.ok) $("apiBanner").classList.add("hidden");
+    else $("apiBanner").classList.remove("hidden");
+  } catch (_) {
+    $("apiBanner").classList.remove("hidden");
+  }
   $("viewWork").classList.add("hidden");
   $("viewHome").classList.remove("hidden");
   $("btnHome").style.display = "none";

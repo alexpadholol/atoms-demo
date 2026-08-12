@@ -380,9 +380,11 @@ app.get("/api/artifact/download", (req, res) => {
   archive.finalize();
 });
 
-// 健康检查
+// 健康检查（含数据库状态，便于部署诊断）
 app.get("/api/health", (req, res) => {
-  res.json({ code: 0, data: { llm: detectProvider(), version: "1.0.0" } });
+  let dbOk = true, dbMsg = "ok";
+  try { db.listProjects.all(); } catch (e) { dbOk = false; dbMsg = e.message; }
+  res.json({ code: 0, data: { llm: detectProvider(), db: { ok: dbOk, msg: dbMsg }, version: "1.0.0" } });
 });
 
 /* ================= 前端 ================= */
